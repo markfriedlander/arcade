@@ -55,6 +55,11 @@ the bubble actually lands, at any frame rate.
 There is no game over. When the board reaches the line, the bottom row dissolves
 instead of ending the run.
 
+Levels are optional and add no fail state, only a sense of progress. A "line" is
+a full row's worth of bubbles cleared by the player's own shots, so the bar moves
+whenever something pops. Bubbles the tide takes away do not count. Level one costs
+X lines and each level after it costs Y more, both adjustable in the menu.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
