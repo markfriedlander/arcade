@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Arcade · Small games for winding down</title>
+<meta name="description" content="A small arcade of quiet browser games. No ads, no accounts, no timers, nothing to install. Free and open source.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='12' cy='13' r='8' fill='%237fb069'/%3E%3Ccircle cx='22' cy='21' r='7' fill='%23e2685c'/%3E%3C/svg%3E">
+<style>
+  /* ============================================================
+     ARCADE: the games room of the studio.
+     House skeleton (dark canvas, single point of light, the family's
+     layout grammar) with sage as its own accent.
+     Palette is the hub's warm neutral rather than a cool one, so the
+     page and the games it opens feel like one continuous thing.
+     ============================================================ */
+  :root {
+    --bg: #0b0a09;
+    --surface: #16130f;
+    --text: #ece7de;
+    --muted: #948b7e;
+    --accent: #7fb069;        /* sage, the arcade's own tone */
+    --accent-glow: #a9d195;
+    --border: #262119;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "SF Pro Text", "SF Pro Display", "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-size: 18px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    background:
+      radial-gradient(ellipse 80% 55% at 50% 7%,
+                      rgba(127, 176, 105, 0.11) 0%,
+                      rgba(127, 176, 105, 0.00) 60%),
+      var(--bg);
+    min-height: 100vh;
+  }
+
+  main { max-width: 720px; margin: 0 auto; padding: 4rem 1.5rem 3rem; }
+
+  /* ---- Hero ---- */
+  .hero { text-align: center; padding: 2rem 0 3rem; }
+  .hero-icon {
+    display: inline-block;
+    width: 168px; height: 168px;
+    border-radius: 38px;
+    overflow: hidden;
+    margin-bottom: 2rem;
+    box-shadow: 0 0 60px rgba(127, 176, 105, 0.20), 0 8px 24px rgba(0, 0, 0, 0.55);
+  }
+  .hero-icon svg { width: 100%; height: 100%; display: block; }
+
+  .wordmark { font-size: 2.75rem; font-weight: 500; letter-spacing: 0.02em; margin-bottom: 0.5rem; }
+  .tagline { font-style: italic; font-size: 1.15rem; color: var(--accent); letter-spacing: 0.01em; }
+
+  .lead {
+    font-size: 1.2rem; line-height: 1.55; text-align: center;
+    max-width: 37rem; margin: 0 auto 3.5rem; font-weight: 300;
+  }
+
+  /* ---- Section label ---- */
+  h2 {
+    font-size: 0.8rem; font-weight: normal; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 0.16em;
+    margin: 3.25rem 0 1.25rem; text-align: center;
+  }
+
+  /* ---- The games themselves ---- */
+  .games { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1.25rem; }
+  @media (max-width: 540px) { .games { grid-template-columns: 1fr; } }
+
+  .game {
+    display: block;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 1.5rem 1.35rem 1.35rem;
+    text-decoration: none;
+    color: var(--text);
+    transition: border-color 0.15s ease, transform 0.15s ease;
+  }
+  a.game:hover { border-color: var(--accent); transform: translateY(-2px); text-decoration: none; }
+
+  .game .pips { display: flex; gap: 6px; margin-bottom: 1rem; }
+  .game .pips i { width: 11px; height: 11px; border-radius: 50%; display: block; }
+
+  .game h3 { font-size: 1.3rem; font-weight: 500; color: var(--text); margin-bottom: 0.3rem; }
+  .game .game-tag { font-style: italic; color: var(--accent); font-size: 0.98rem; margin-bottom: 0.7rem; }
+  .game p.what { font-size: 0.95rem; line-height: 1.55; font-weight: 300; color: var(--muted); margin-bottom: 1.1rem; }
+  .game .play { font-size: 0.9rem; color: var(--accent); letter-spacing: 0.02em; }
+  a.game:hover .play { color: var(--accent-glow); }
+
+  .game.soon { opacity: 0.55; }
+  .game.soon .pips i { background: #3a352c !important; }
+  .game.soon .game-tag { color: var(--muted); }
+  .game.soon .play { color: var(--muted); }
+
+  /* ---- What the arcade is and is not ---- */
+  .features { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1.25rem; margin: 1.25rem 0 0; }
+  @media (max-width: 540px) { .features { grid-template-columns: 1fr; } }
+
+  .feature { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 1.5rem 1.25rem; }
+  .feature h3 { font-size: 1.05rem; font-weight: 500; color: var(--accent); margin-bottom: 0.6rem; }
+  .feature p { font-size: 0.95rem; line-height: 1.55; margin: 0; font-weight: 300; }
+
+  .closing {
+    text-align: center; margin: 4rem 0 3rem; padding: 2.5rem 1rem;
+    border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+  }
+  .closing p { font-style: italic; font-size: 1.4rem; font-weight: 300; }
+
+  a { color: var(--accent); text-decoration: none; transition: color 0.15s ease; }
+  a:hover { color: var(--accent-glow); text-decoration: underline; }
+
+  footer {
+    margin-top: 3rem; padding-top: 2rem; border-top: 1px solid var(--border);
+    text-align: center; font-size: 0.9rem; color: var(--muted); line-height: 1.9;
+  }
+  footer a { color: var(--accent); }
+  footer .sep { color: var(--border); padding: 0 0.4rem; }
+</style>
+</head>
+<body>
+  <main>
+
+    <section class="hero">
+      <div class="hero-icon">
+        <!-- Drawn inline so the page carries no assets of its own. -->
+        <svg viewBox="0 0 512 512" role="img" aria-label="Arcade icon, a cluster of coloured bubbles glowing on black.">
+          <defs>
+            <radialGradient id="gA" cx="35%" cy="30%" r="72%">
+              <stop offset="0%" stop-color="#f4a094"/><stop offset="55%" stop-color="#e2685c"/><stop offset="100%" stop-color="#a63d33"/>
+            </radialGradient>
+            <radialGradient id="gB" cx="35%" cy="30%" r="72%">
+              <stop offset="0%" stop-color="#f7c982"/><stop offset="55%" stop-color="#e8a23c"/><stop offset="100%" stop-color="#a86a17"/>
+            </radialGradient>
+            <radialGradient id="gC" cx="35%" cy="30%" r="72%">
+              <stop offset="0%" stop-color="#a9d195"/><stop offset="55%" stop-color="#7fb069"/><stop offset="100%" stop-color="#4d7538"/>
+            </radialGradient>
+            <radialGradient id="gD" cx="35%" cy="30%" r="72%">
+              <stop offset="0%" stop-color="#a2cdec"/><stop offset="55%" stop-color="#6ba8d6"/><stop offset="100%" stop-color="#3b6f97"/>
+            </radialGradient>
+            <radialGradient id="gE" cx="35%" cy="30%" r="72%">
+              <stop offset="0%" stop-color="#c9b4e8"/><stop offset="55%" stop-color="#a98bd4"/><stop offset="100%" stop-color="#71579b"/>
+            </radialGradient>
+            <radialGradient id="glow" cx="50%" cy="42%" r="55%">
+              <stop offset="0%" stop-color="#7fb069" stop-opacity="0.30"/>
+              <stop offset="100%" stop-color="#7fb069" stop-opacity="0"/>
+            </radialGradient>
+          </defs>
+
+          <rect width="512" height="512" fill="#0b0a09"/>
+          <rect width="512" height="512" fill="url(#glow)"/>
+
+          <g>
+            <circle cx="198" cy="196" r="58" fill="url(#gA)"/>
+            <ellipse cx="178" cy="173" rx="16" ry="11" fill="#fff" opacity="0.32" transform="rotate(-34 178 173)"/>
+            <circle cx="314" cy="196" r="58" fill="url(#gB)"/>
+            <ellipse cx="294" cy="173" rx="16" ry="11" fill="#fff" opacity="0.32" transform="rotate(-34 294 173)"/>
+
+            <circle cx="140" cy="297" r="58" fill="url(#gC)"/>
+            <ellipse cx="120" cy="274" rx="16" ry="11" fill="#fff" opacity="0.32" transform="rotate(-34 120 274)"/>
+            <circle cx="256" cy="297" r="58" fill="url(#gD)"/>
+            <ellipse cx="236" cy="274" rx="16" ry="11" fill="#fff" opacity="0.32" transform="rotate(-34 236 274)"/>
+            <circle cx="372" cy="297" r="58" fill="url(#gE)"/>
+            <ellipse cx="352" cy="274" rx="16" ry="11" fill="#fff" opacity="0.32" transform="rotate(-34 352 274)"/>
+          </g>
+        </svg>
+      </div>
+      <h1 class="wordmark">Arcade</h1>
+      <p class="tagline">Nothing to sell you.</p>
+    </section>
+
+    <p class="lead">
+      A small room of quiet games that run in your browser. Nothing to install, nothing to sign up for,
+      and not a single advertisement between you and the game.
+    </p>
+
+    <h2>Games</h2>
+    <section class="games">
+
+      <a class="game" href="bubbles/">
+        <span class="pips">
+          <i style="background:#e2685c"></i><i style="background:#e8a23c"></i><i style="background:#7fb069"></i><i style="background:#6ba8d6"></i><i style="background:#a98bd4"></i>
+        </span>
+        <h3>Bubbles</h3>
+        <p class="game-tag">Nothing to lose.</p>
+        <p class="what">
+          A bubble shooter with no timer, no lives, and no way to lose. Match three to clear them,
+          bank shots off the walls, and take back a move whenever you want one.
+        </p>
+        <span class="play">Play &rarr;</span>
+      </a>
+
+      <div class="game soon">
+        <span class="pips"><i></i><i></i><i></i><i></i><i></i></span>
+        <h3>Killer Sudoku</h3>
+        <p class="game-tag">In the works.</p>
+        <p class="what">
+          Cages and sums, no given digits. Pencil marks, a thumb-friendly keypad,
+          and puzzles generated with exactly one solution.
+        </p>
+        <span class="play">Not yet</span>
+      </div>
+
+    </section>
+
+    <h2>House rules</h2>
+    <section class="features">
+
+      <div class="feature">
+        <h3>No ads, at all</h3>
+        <p>Not a banner, not an interstitial, not a video you have to sit through to keep playing. The games are the whole page.</p>
+      </div>
+
+      <div class="feature">
+        <h3>Nothing leaves your device</h3>
+        <p>No accounts, no analytics, no servers, no trackers. Scores and saved boards live in your own browser and go nowhere else.</p>
+      </div>
+
+      <div class="feature">
+        <h3>Phone and laptop</h3>
+        <p>Built for touch and for a mouse in the same file. Add it to your home screen and it behaves like an app.</p>
+      </div>
+
+      <div class="feature">
+        <h3>Works with the signal off</h3>
+        <p>Each game is a single self-contained page with no dependencies. Once it has loaded, it keeps working on a plane.</p>
+      </div>
+
+      <div class="feature">
+        <h3>Free and open</h3>
+        <p>MIT licensed. Read it, fork it, host your own copy. There is nothing hidden in there.</p>
+      </div>
+
+      <div class="feature">
+        <h3>Made to be left</h3>
+        <p>Nothing nags you to come back. No streaks to protect, no daily reward, no reason to open it except wanting to.</p>
+      </div>
+
+    </section>
+
+    <div class="closing">
+      <p>Games that end when you decide to stop.</p>
+    </div>
+
+    <footer>
+      <a href="https://github.com/markfriedlander/arcade">Source</a><span class="sep">·</span><a href="https://markfriedlander.github.io/">Home</a><span class="sep">·</span>© 2026 <a href="https://markfriedlander.github.io/">Mark Friedlander</a>
+    </footer>
+
+  </main>
+</body>
+</html>
