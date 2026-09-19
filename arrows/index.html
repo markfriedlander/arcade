@@ -102,6 +102,11 @@
   .card .sub { font-style: italic; color: var(--accent); font-size: 1rem; margin-bottom: 1.3rem; }
   .card p.body { color: var(--muted); font-size: 0.93rem; line-height: 1.62; margin-bottom: 1.4rem; }
   .card p.body b { color: var(--text); font-weight: 500; }
+  .tiers { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem; margin-bottom: 1.1rem; }
+  .tiers .btn { padding: 0.6rem 0.4rem; font-size: 0.88rem; }
+  .tiers .btn.on { border-color: var(--accent); color: var(--accent); background: rgba(127,176,105,0.07); }
+  .tiers .btn small { display: block; font-size: 0.68rem; opacity: 0.65; margin-top: 0.15rem; }
+
   .rowbtns { display: flex; flex-direction: column; gap: 0.6rem; }
   .rowbtns .btn { padding: 0.75rem; font-size: 0.95rem; }
   .btn.primary { border-color: var(--accent); color: var(--accent); }
@@ -117,7 +122,7 @@
 <body>
 
 <div id="bar">
-  <div class="stat"><span class="k">Level</span><span class="v" id="level">1</span></div>
+  <div class="stat"><span class="k" id="tierName">EASY</span><span class="v" id="level">1</span></div>
   <div class="stat sub"><span class="k">Left</span><span class="v" id="left">0</span></div>
   <div id="spacer"></div>
   <button class="btn icon" id="undo" title="Undo" aria-label="Undo">&#8630;</button>
@@ -135,8 +140,9 @@
       Tap an arrow. If it has a <b>clear run to the edge</b> in the direction it points,
       it slides out. If something is in the way, nothing happens and it shows you what blocked it.<br><br>
       Clearing an arrow can only ever free others, never trap them, so there is no wrong order
-      and no way to get stuck. Clear the board to move on.
+      and no way to get stuck. Pick a size below and start wherever you like.
     </p>
+    <div class="tiers" id="tiers"></div>
     <div class="rowbtns">
       <button class="btn primary" id="play">Play</button>
       <button class="btn" id="replay" style="display:none">Restart level</button>
@@ -164,7 +170,20 @@ const PALETTE = [
   "#cf7468", "#d69a4e", "#7fa868", "#6795bd", "#9b84bb", "#bfa87e", "#5f9e97"
 ];
 
+/* Difficulty is a tier you choose, not something you grind toward. Growing the
+   board with the level number alone meant a new player sat on a 6x8 board and
+   needed roughly fifty levels to reach a full sized one, so the interesting
+   boards were effectively hidden. Each tier starts at its own size and creeps
+   up across its own span. */
+const TIERS = [
+  { name: "Easy",   cols: [7, 9],   fill: [0.55, 0.66], len: [4, 7],   span: 20 },
+  { name: "Medium", cols: [10, 12], fill: [0.62, 0.73], len: [6, 10],  span: 25 },
+  { name: "Hard",   cols: [13, 15], fill: [0.68, 0.79], len: [9, 14],  span: 30 },
+  { name: "Expert", cols: [16, 18], fill: [0.72, 0.85], len: [12, 18], span: 40 }
+];
+
 let COLS = 6, ROWS = 6;
+let tier = 1;
 
 const idx = (x, y) => y * COLS + x;
 const ix = i => i % COLS;
@@ -215,31 +234,35 @@ function forwardRun(cell, dir) {
    placement order, reversed, is a guaranteed solution and nothing
    ever needs testing or throwing away.
    ============================================================ */
-function generate(level) {
-  const rnd = rngFrom(level * 2654435761);
+function generate(level, forTier) {
+  const ti = forTier === undefined ? tier : forTier;
+  const T = TIERS[ti];
+  const rnd = rngFrom(level * 2654435761 + ti * 7919);
 
-  // Boards grow with the level, and so does how tangled they get. Single cell
-  // arrows are excluded entirely: they read as dots rather than arrows and
-  // block almost nothing, so they make a board look busy without making it
-  // interesting.
-  // Boards are taller than they are wide, which matches a printed board and
-  // uses a phone screen instead of leaving half of it empty.
-  const size = Math.min(18, 6 + Math.floor(level / 4));
-  COLS = size;
-  ROWS = Math.min(23, Math.round(size * 1.28));
+  // Within a tier the board creeps from its low end to its high end. Boards are
+  // taller than wide, which matches a printed board and uses a phone screen
+  // instead of leaving half of it empty. Single cell arrows are excluded: they
+  // read as dots rather than arrows and block almost nothing, so they make a
+  // board look busy without making it interesting.
+  const k = Math.min(1, (level - 1) / T.span);
+  const lerp = (a, b) => a + (b - a) * k;
+  COLS = Math.round(lerp(T.cols[0], T.cols[1]));
+  ROWS = Math.min(24, Math.round(COLS * 1.28));
   const minLen = 2;
-  const maxLen = Math.min(18, 3 + Math.floor(level / 3));
-  const fill = Math.min(0.88, 0.52 + level * 0.008);
+  const maxLen = Math.round(lerp(T.len[0], T.len[1]));
+  const fill = lerp(T.fill[0], T.fill[1]);
+
   // How hard the generator works to lay each new piece across the exit runs of
   // pieces already down. Higher means longer chains of dependency, so fewer
   // arrows are clearable at any moment and you have to look harder to find one.
   // It cannot affect solvability: it only picks between placements that were
   // already legal.
+  //
   // Tried scaling this with board size to make dense boards harder. It did the
   // opposite: a pickier generator fits fewer pieces, so the board came out
   // emptier and easier, and generation took three times as long. Filling the
   // board matters more than placing each piece perfectly.
-  const tangle = Math.min(10, 1 + Math.floor(level / 4));
+  const tangle = Math.min(10, 2 + ti + Math.floor(level / 5));
 
   const owner = new Int16Array(COLS * ROWS).fill(-1);
   const placed = [];
@@ -750,15 +773,26 @@ const $sound = document.getElementById("sound");
 const $veil = document.getElementById("veil");
 
 function syncUI() {
+  $tierName.textContent = TIERS[tier].name.toUpperCase();
   $level.textContent = level;
   $left.textContent = pieces.length;
   $undo.disabled = !history.length;
 }
 
-function save() { try { localStorage.setItem("arrows.level", level); } catch (e) {} }
+function save() {
+  try {
+    localStorage.setItem("arrows.level." + tier, level);
+    localStorage.setItem("arrows.tier", tier);
+  } catch (e) {}
+}
+function savedLevel(t) {
+  try { return parseInt(localStorage.getItem("arrows.level." + t) || "1", 10) || 1; }
+  catch (e) { return 1; }
+}
 function storeBest() { try { localStorage.setItem("arrows.best", best); } catch (e) {} }
 
-try { level = parseInt(localStorage.getItem("arrows.level") || "1", 10) || 1; } catch (e) {}
+try { tier = Math.min(3, Math.max(0, parseInt(localStorage.getItem("arrows.tier") || "0", 10) || 0)); } catch (e) {}
+level = savedLevel(tier);
 try { best = parseInt(localStorage.getItem("arrows.best") || "1", 10) || 1; } catch (e) {}
 try { const s = localStorage.getItem("arrows.sound"); if (s !== null) soundOn = s === "1"; } catch (e) {}
 $sound.style.opacity = soundOn ? "1" : "0.36";
@@ -771,6 +805,31 @@ $sound.addEventListener("click", () => {
   if (soundOn) { audio(); sfxUndo(); }
 });
 
+const $tiers = document.getElementById("tiers");
+const $tierName = document.getElementById("tierName");
+
+function buildTierPicker() {
+  $tiers.innerHTML = "";
+  TIERS.forEach((T, i) => {
+    const b = document.createElement("button");
+    b.className = "btn" + (i === tier ? " on" : "");
+    // Show the board it gives you, so the choice is concrete rather than a word.
+    const lo = T.cols[0], hi = T.cols[1];
+    b.innerHTML = T.name + "<small>" + lo + "x" + Math.round(lo * 1.28) +
+                  (hi !== lo ? " to " + hi + "x" + Math.round(hi * 1.28) : "") + "</small>";
+    b.addEventListener("click", () => {
+      tier = i;
+      level = savedLevel(i);
+      loadLevel(level);
+      buildTierPicker();
+      $veil.classList.remove("on");
+      audio();
+      running = true;
+    });
+    $tiers.appendChild(b);
+  });
+}
+
 document.getElementById("menu").addEventListener("click", () => {
   running = false;
   document.getElementById("ttl").textContent = "Paused";
@@ -781,6 +840,7 @@ document.getElementById("menu").addEventListener("click", () => {
     "Tap an arrow with a clear run to the edge. Nothing you do can make the board unsolvable.";
   document.getElementById("play").textContent = "Resume";
   document.getElementById("replay").style.display = "block";
+  buildTierPicker();
   $veil.classList.add("on");
 });
 document.getElementById("play").addEventListener("click", () => {
@@ -795,6 +855,7 @@ window.addEventListener("orientationchange", () => setTimeout(resize, 140));
 if (window.visualViewport) window.visualViewport.addEventListener("resize", resize);
 
 loadLevel(level);
+buildTierPicker();
 if (level > 1) {
   document.getElementById("play").textContent = "Resume";
   document.getElementById("replay").style.display = "block";
