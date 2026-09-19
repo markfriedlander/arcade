@@ -182,6 +182,7 @@ function rngFrom(seed) {
   };
 }
 let placedPieces = [];    // what is already on the board while generating
+const STRAIGHT_BIAS = 0.62;   // chance a growing body carries straight on
 const pick = (arr, rnd) => arr[(rnd() * arr.length) | 0];
 function shuffle(arr, rnd) {
   for (let i = arr.length - 1; i > 0; i--) {
@@ -220,11 +221,14 @@ function generate(level) {
   // arrows are excluded entirely: they read as dots rather than arrows and
   // block almost nothing, so they make a board look busy without making it
   // interesting.
-  const size = Math.min(11, 6 + Math.floor(level / 10));
-  COLS = ROWS = size;
+  // Boards are taller than they are wide, which matches a printed board and
+  // uses a phone screen instead of leaving half of it empty.
+  const size = Math.min(14, 6 + Math.floor(level / 5));
+  COLS = size;
+  ROWS = Math.min(18, Math.round(size * 1.25));
   const minLen = 2;
-  const maxLen = Math.min(7, 3 + Math.floor(level / 12));
-  const fill = Math.min(0.78, 0.50 + level * 0.006);
+  const maxLen = Math.min(14, 3 + Math.floor(level / 4));
+  const fill = Math.min(0.80, 0.50 + level * 0.006);
   // How hard the generator works to lay each new piece across the exit runs of
   // pieces already down. Higher means longer chains of dependency, so fewer
   // arrows are clearable at any moment and you have to look harder to find one.
@@ -265,29 +269,45 @@ function tryPlace(owner, minLen, maxLen, tangle, rnd) {
       const run = forwardRun(head, dir);
       if (run.some(c => owner[c] !== -1)) continue;     // the exit must be clear now
 
+      // The cell behind the head must be free: the shaft has to run into the
+      // arrowhead, the way it does on a printed board. Without this a piece can
+      // meet its head sideways and stop reading as an arrow at all.
+      const behind = (() => {
+        const [bx, by] = DIRS[dir ^ 1];
+        const x = ix(head) + bx, y = iy(head) + by;
+        if (x < 0 || x >= COLS || y < 0 || y >= ROWS) return -1;
+        const n = idx(x, y);
+        return owner[n] === -1 ? n : -1;
+      })();
+      if (behind === -1) continue;
+
       const runSet = new Set(run);
       const target = minLen + ((rnd() * (maxLen - minLen + 1)) | 0);
 
       // Growing a body can dead end, so try a few times and keep the longest.
       let bestCells = null;
-      for (let attempt = 0; attempt < 5; attempt++) {
-        const cells = [head];
-        const used = new Set([head]);
-        let cur = head;
+      for (let attempt = 0; attempt < 6; attempt++) {
+        const cells = [head, behind];
+        const used = new Set([head, behind]);
+        let cur = behind, curDir = dir ^ 1;
         while (cells.length < target) {
           const opts = [];
-          for (const [dx, dy] of DIRS) {
+          for (let d = 0; d < 4; d++) {
+            if (d === (curDir ^ 1)) continue;             // never double back
+            const [dx, dy] = DIRS[d];
             const x = ix(cur) + dx, y = iy(cur) + dy;
             if (x < 0 || x >= COLS || y < 0 || y >= ROWS) continue;
             const n = idx(x, y);
             // The body must not sit in the head's own run, or the piece
             // would block itself on the way out.
             if (owner[n] !== -1 || used.has(n) || runSet.has(n)) continue;
-            opts.push(n);
+            opts.push({ n, d });
           }
           if (!opts.length) break;
-          const next = pick(opts, rnd);
-          cells.push(next); used.add(next); cur = next;
+          // Favour carrying straight on, so shapes look drawn rather than random.
+          const straight = opts.find(o => o.d === curDir);
+          const chosen = (straight && rnd() < STRAIGHT_BIAS) ? straight : pick(opts, rnd);
+          cells.push(chosen.n); used.add(chosen.n); cur = chosen.n; curDir = chosen.d;
         }
         if (!bestCells || cells.length > bestCells.length) bestCells = cells;
         if (bestCells.length >= target) break;
@@ -462,8 +482,11 @@ let banner = null;
 
 function resize() {
   const r = wrap.getBoundingClientRect();
-  const avail = Math.max(200, Math.min(r.width, r.height, 560));
-  S = Math.floor(avail / (Math.max(COLS, ROWS) + 0.6));
+  // Fit each axis against its own dimension. Sizing a tall board by its longer
+  // side against the shorter side of the screen left it marooned in black.
+  const availW = Math.max(180, Math.min(r.width, 620));
+  const availH = Math.max(200, r.height);
+  S = Math.max(12, Math.floor(Math.min(availW / (COLS + 0.6), availH / (ROWS + 0.6))));
   PAD = Math.round(S * 0.3);
   W = COLS * S + PAD * 2;
   H = ROWS * S + PAD * 2;
@@ -488,11 +511,10 @@ function drawPiece(p, points, alpha, glow) {
   const col = PALETTE[p.colour % PALETTE.length];
   const A = alpha === undefined ? 1 : alpha;
   const head = points[points.length - 1];
-  const prev = points.length > 1 ? points[points.length - 2]
-                                 : { x: head.x - DIRS[p.dir][0], y: head.y - DIRS[p.dir][1] };
-  let vx = head.x - prev.x, vy = head.y - prev.y;
-  const len = Math.hypot(vx, vy) || 1;
-  vx /= len; vy /= len;
+  // Taken from the piece's own direction, never from the last drawn segment.
+  // Deriving it from the geometry made a piece whose body met its head at a
+  // bend draw an arrowhead pointing somewhere it was never going to travel.
+  const vx = DIRS[p.dir][0], vy = DIRS[p.dir][1];
 
   const HEAD = S * 0.44;                 // how far the triangle reaches
   const body = points.slice(0, -1).concat([
