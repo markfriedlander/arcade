@@ -182,6 +182,7 @@ function rngFrom(seed) {
   };
 }
 let placedPieces = [];    // what is already on the board while generating
+let placedBlockers = [];  // how many later pieces already sit in each one's run
 const STRAIGHT_BIAS = 0.62;   // chance a growing body carries straight on
 const pick = (arr, rnd) => arr[(rnd() * arr.length) | 0];
 function shuffle(arr, rnd) {
@@ -223,17 +224,21 @@ function generate(level) {
   // interesting.
   // Boards are taller than they are wide, which matches a printed board and
   // uses a phone screen instead of leaving half of it empty.
-  const size = Math.min(14, 6 + Math.floor(level / 5));
+  const size = Math.min(18, 6 + Math.floor(level / 4));
   COLS = size;
-  ROWS = Math.min(18, Math.round(size * 1.25));
+  ROWS = Math.min(23, Math.round(size * 1.28));
   const minLen = 2;
-  const maxLen = Math.min(14, 3 + Math.floor(level / 4));
-  const fill = Math.min(0.80, 0.50 + level * 0.006);
+  const maxLen = Math.min(18, 3 + Math.floor(level / 3));
+  const fill = Math.min(0.88, 0.52 + level * 0.008);
   // How hard the generator works to lay each new piece across the exit runs of
   // pieces already down. Higher means longer chains of dependency, so fewer
   // arrows are clearable at any moment and you have to look harder to find one.
   // It cannot affect solvability: it only picks between placements that were
   // already legal.
+  // Tried scaling this with board size to make dense boards harder. It did the
+  // opposite: a pickier generator fits fewer pieces, so the board came out
+  // emptier and easier, and generation took three times as long. Filling the
+  // board matters more than placing each piece perfectly.
   const tangle = Math.min(10, 1 + Math.floor(level / 4));
 
   const owner = new Int16Array(COLS * ROWS).fill(-1);
@@ -241,10 +246,19 @@ function generate(level) {
   const wanted = Math.floor(COLS * ROWS * fill);
   let filled = 0, guard = 0;
 
-  while (filled < wanted && guard++ < 3000) {
+  const blockers = [];      // per placed piece, how many later pieces intrude on its run
+  while (filled < wanted && guard++ < 9000) {
     placedPieces = placed;
+    placedBlockers = blockers;
     const piece = tryPlace(owner, minLen, maxLen, tangle, rnd);
     if (!piece) continue;
+
+    // Each piece's run is cached here rather than recomputed per candidate,
+    // which is what keeps generation on a full sized board near a tenth of a
+    // second instead of several times that.
+    piece.run = forwardRun(piece.cells[0], piece.dir);
+    blockers.push(0);
+
     for (const c of piece.cells) owner[c] = placed.length;
     placed.push(piece);
     filled += piece.cells.length;
@@ -314,13 +328,22 @@ function tryPlace(owner, minLen, maxLen, tangle, rnd) {
       }
       if (!bestCells || bestCells.length < minLen) continue;   // no dots
 
-      // Score it by how many already placed pieces it gets in the way of.
+      // Score by how many already placed pieces it gets in the way of.
+      //
+      // Weighting this toward pieces it would be the *sole* blocker of was
+      // tried, on the theory that only those produce a move that opens several
+      // paths at once. It changed nothing, and the reason is arithmetic rather
+      // than tuning: every piece becomes free exactly once, so the unlocks over
+      // a whole board sum to (pieces - those free at the start). Big unlock
+      // moments need fewer arrows free at the start, not cleverer placement.
+      // On a dense board a run reaching the edge crosses several pieces, so
+      // most arrows have more than one thing in their way and no single removal
+      // opens much. Left simple.
       const cellSet = new Set(bestCells);
-      const blocked = new Set();
-      for (const q of placedPieces) {
-        if (forwardRun(q.cells[0], q.dir).some(c => cellSet.has(c))) blocked.add(q);
+      let score = 0;
+      for (let j = 0; j < placedPieces.length; j++) {
+        if (placedPieces[j].run.some(c => cellSet.has(c))) score++;
       }
-      const score = blocked.size;
       if (score > bestScore) { bestScore = score; bestPiece = { cells: bestCells, dir }; }
       if (++tried >= tangle || score >= 3) return bestPiece;
     }
@@ -486,7 +509,7 @@ function resize() {
   // side against the shorter side of the screen left it marooned in black.
   const availW = Math.max(180, Math.min(r.width, 620));
   const availH = Math.max(200, r.height);
-  S = Math.max(12, Math.floor(Math.min(availW / (COLS + 0.6), availH / (ROWS + 0.6))));
+  S = Math.max(8, Math.floor(Math.min(availW / (COLS + 0.6), availH / (ROWS + 0.6))));
   PAD = Math.round(S * 0.3);
   W = COLS * S + PAD * 2;
   H = ROWS * S + PAD * 2;
