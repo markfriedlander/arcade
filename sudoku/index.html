@@ -594,7 +594,8 @@ let history = [];
 let tier = 0, seedCounter = 1;
 let running = false;
 let flash = null;                  // {cell, t} for a wrong entry
-let settings = { clock: true, mistakes: true, check: true };
+const DEFAULTS = { clock: true, mistakes: true, check: true, highlights: true };
+let settings = Object.assign({}, DEFAULTS);
 
 const isGiven = c => puzzle.givens[c] !== 0;
 const isWrong = c => entries[c] !== 0 && entries[c] !== puzzle.solution[c];
@@ -628,7 +629,7 @@ function render(now) {
   ctx.clearRect(0, 0, W, H);
 
   const selVal = selection >= 0 ? entries[selection] : 0;
-  const peers = selection >= 0 ? new Set(E.PEERS[selection]) : null;
+  const peers = selection >= 0 && settings.highlights ? new Set(E.PEERS[selection]) : null;
 
   for (let c = 0; c < 81; c++) {
     let fill = "rgba(236,231,222,0.022)";
@@ -636,8 +637,10 @@ function render(now) {
     if (((box / 3 | 0) + (box % 3)) % 2 === 1) fill = "rgba(236,231,222,0.042)";
     if (selection >= 0) {
       if (c === selection) fill = "rgba(200,178,138,0.17)";
-      else if (selVal && entries[c] === selVal) fill = "rgba(200,178,138,0.10)";
-      else if (peers.has(c)) fill = "rgba(236,231,222,0.065)";
+      else if (settings.highlights) {
+        if (selVal && entries[c] === selVal) fill = "rgba(200,178,138,0.10)";
+        else if (peers.has(c)) fill = "rgba(236,231,222,0.065)";
+      }
     }
     ctx.fillStyle = fill;
     ctx.fillRect(cellX(c), cellY(c), S, S);
@@ -832,11 +835,14 @@ function restore() {
   mistakes = s.mistakes | 0;
   elapsed = s.elapsed || 0;
   tier = s.tier | 0;
-  if (s.settings) settings = s.settings;
+  settings = Object.assign({}, DEFAULTS, s.settings || {});
   if (typeof s.soundOn === "boolean") soundOn = s.soundOn;
   finished = solved();
   return true;
 }
+
+window.addEventListener("pagehide", save);
+document.addEventListener("visibilitychange", () => { if (document.hidden) save(); });
 
 /* ---------- input ---------- */
 cv.addEventListener("pointerdown", e => {
@@ -935,7 +941,8 @@ if (window.visualViewport) window.visualViewport.addEventListener("resize", resi
 
   function buildOpts() {
     $opts.innerHTML = "";
-    [["Check as you play", "check"], ["Clock", "clock"], ["Mistake count", "mistakes"]]
+    [["Check as you play", "check"], ["Highlights", "highlights"],
+     ["Clock", "clock"], ["Mistake count", "mistakes"]]
       .forEach(([label, key]) => {
         const row = document.createElement("div");
         row.className = "opt";
@@ -952,17 +959,21 @@ if (window.visualViewport) window.visualViewport.addEventListener("resize", resi
       });
   }
 
-  document.getElementById("menu").addEventListener("click", () => {
+  function showResume(returning) {
     running = false;
-    document.getElementById("ttl").textContent = "Paused";
-    document.getElementById("sttl").textContent = "Take your time.";
+    const left = 81 - entries.reduce((n, v) => n + (v ? 1 : 0), 0);
+    document.getElementById("ttl").textContent = returning ? "Welcome back" : "Paused";
+    document.getElementById("sttl").textContent =
+      returning ? "Your puzzle is where you left it." : "Take your time.";
     document.getElementById("msg").innerHTML =
-      E.TIERS[tier].name + ", <b>" + (81 - entries.reduce((n, v) => n + (v ? 1 : 0), 0)) +
-      "</b> left.<br><br>Pick a difficulty below to start a new one, or resume this.";
+      E.TIERS[tier].name + ", <b>" + left + "</b> left.<br><br>" +
+      "Resume below, or pick a difficulty to start a new one.";
     document.getElementById("play").textContent = "Resume";
     buildTiers(); buildOpts();
     $veil.classList.add("on");
-  });
+  }
+
+  document.getElementById("menu").addEventListener("click", () => showResume(false));
 
   document.getElementById("play").addEventListener("click", () => {
     $veil.classList.remove("on"); audio(); running = true;
@@ -985,10 +996,18 @@ if (window.visualViewport) window.visualViewport.addEventListener("resize", resi
     };
   };
 
+  // Only greet a puzzle that was actually played. A board dealt and left
+  // untouched should open on the welcome copy like any first visit.
+  const touched = () => entries.some((v, i) => v !== puzzle.givens[i]) ||
+                        notes.some(n => n !== 0);
+  let resuming = false;
   if (!restore()) newPuzzle(0);
+  else if (finished) newPuzzle(tier);
+  else resuming = touched();
   paintSound();
   buildTiers(); buildOpts();
   resize(); syncUI();
+  if (resuming) showResume(true);
   requestAnimationFrame(t => { lastTick = t; frame(t); });
 })();
 </script>
