@@ -621,6 +621,8 @@ function resize() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 
+const WRONG = "#dd5346";
+
 const cellX = c => PAD + (c % 9) * S;
 const cellY = c => PAD + ((c / 9) | 0) * S;
 
@@ -650,7 +652,7 @@ function render(now) {
   if (flash) {
     ctx.save();
     ctx.globalAlpha = Math.max(0, 1 - flash.t / 0.6) * 0.5;
-    ctx.fillStyle = "#cf7468";
+    ctx.fillStyle = WRONG;
     ctx.fillRect(cellX(flash.cell), cellY(flash.cell), S, S);
     ctx.restore();
   }
@@ -680,7 +682,7 @@ function render(now) {
     const x = cellX(c) + S / 2, y = cellY(c) + S / 2 + S * 0.03;
     if (entries[c]) {
       const wrong = settings.check && isWrong(c);
-      ctx.fillStyle = wrong ? "#cf7468" : (isGiven(c) ? "#ddd6c8" : "#c8b28a");
+      ctx.fillStyle = wrong ? WRONG : (isGiven(c) ? "#ddd6c8" : "#c8b28a");
       ctx.font = (isGiven(c) ? "500 " : "400 ") + Math.round(S * 0.60) +
                  "px -apple-system, Helvetica, Arial, sans-serif";
       ctx.fillText(entries[c], x, y);
