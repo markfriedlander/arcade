@@ -68,6 +68,8 @@
   .btn:hover { border-color: var(--accent); color: var(--accent); }
   .btn:disabled { opacity: 0.3; cursor: default; border-color: var(--border); color: var(--muted); }
   .btn.icon { padding: 0.4rem 0.6rem; min-width: 2.2rem; font-size: 0.95rem; line-height: 1.1; }
+  #sound.on { border-color: var(--accent); color: var(--accent); }
+  #sound.off { color: var(--muted); text-decoration: line-through; text-decoration-thickness: 1.5px; }
 
   /* Shrink to the board rather than growing, so the keypad sits under it
      instead of being flung to the bottom of a tall screen. */
@@ -783,13 +785,22 @@ function newPuzzle(t) {
 }
 
 /* ---------- sound ---------- */
-let actx = null, soundOn = true;
+// soundOn is what the player asked for. audioDead is whether the browser can
+// do it at all. Keeping them apart matters: the old code turned the player's
+// setting off to record its own failure, then saved that as a preference.
+let actx = null, soundOn = true, audioDead = false;
+let paintSound = () => {};
+
 function audio() {
-  if (!actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { soundOn = false; } }
-  if (actx && actx.state === "suspended") actx.resume();
+  if (audioDead) return;
+  if (!actx) {
+    try { actx = new (window.AudioContext || window.webkitAudioContext)(); }
+    catch (e) { audioDead = true; paintSound(); return; }
+  }
+  if (actx.state !== "running") actx.resume().then(paintSound, () => {});
 }
-function tone(f, dur, type, gain, delay) {
-  if (!soundOn || !actx) return;
+
+function emit(f, dur, type, gain, delay) {
   const t0 = actx.currentTime + (delay || 0);
   const o = actx.createOscillator(), g = actx.createGain();
   o.type = type || "sine";
@@ -799,6 +810,19 @@ function tone(f, dur, type, gain, delay) {
   g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
   o.connect(g); g.connect(actx.destination);
   o.start(t0); o.stop(t0 + dur + 0.03);
+}
+
+// A context only starts from inside a gesture, and resume() settles a beat
+// after it is asked. A note scheduled in that gap is timed against a clock
+// that has not started, so it lands in the past and is dropped without a
+// sound or an error. On a phone that was every note. Wait for the resume.
+function tone(f, dur, type, gain, delay) {
+  if (!soundOn || audioDead || !actx) return;
+  if (actx.state === "running") { emit(f, dur, type, gain, delay); return; }
+  actx.resume().then(() => {
+    if (soundOn && actx.state === "running") emit(f, dur, type, gain, delay);
+    paintSound();
+  }, () => {});
 }
 const sfxPlace = () => tone(660, 0.07, "sine", 0.028);
 const sfxWrong = () => tone(150, 0.13, "triangle", 0.04);
@@ -844,7 +868,7 @@ function save() {
   try {
     localStorage.setItem("sudoku.save", JSON.stringify({
       puzzle, entries: Array.from(entries), notes: Array.from(notes),
-      mistakes, elapsed, tier, settings, soundOn
+      mistakes, elapsed, tier, settings, soundPref: soundOn
     }));
   } catch (e) {}
 }
@@ -859,7 +883,9 @@ function restore() {
   elapsed = s.elapsed || 0;
   tier = s.tier | 0;
   settings = Object.assign({}, DEFAULTS, s.settings || {});
-  if (typeof s.soundOn === "boolean") soundOn = s.soundOn;
+  // s.soundOn is the older key, which a failure could flip off on its own.
+  // Only soundPref was ever set by a deliberate press, so only it is honoured.
+  if (typeof s.soundPref === "boolean") soundOn = s.soundPref;
   finished = solved();
   return true;
 }
@@ -941,9 +967,19 @@ if (window.visualViewport) window.visualViewport.addEventListener("resize", resi
   });
 
   const $sound = document.getElementById("sound");
-  function paintSound() { $sound.style.opacity = soundOn ? "1" : "0.36"; }
+  paintSound = function () {
+    $sound.classList.toggle("on", soundOn && !audioDead);
+    $sound.classList.toggle("off", !soundOn || audioDead);
+    $sound.disabled = audioDead;
+    $sound.title = audioDead ? "This browser will not play sound"
+                 : soundOn ? "Sound on" : "Sound off";
+    $sound.setAttribute("aria-label", $sound.title);
+    $sound.setAttribute("aria-pressed", String(soundOn && !audioDead));
+  };
   $sound.addEventListener("click", () => {
     soundOn = !soundOn; paintSound(); save();
+    // Turning it on plays a note, so the answer to "is this working" is the
+    // sound itself rather than the state of a small button.
     if (soundOn) { audio(); sfxPlace(); }
   });
 
