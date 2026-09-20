@@ -79,20 +79,20 @@
   canvas { display: block; touch-action: none; }
 
   #tools {
-    display: flex; justify-content: center; gap: 2.2rem;
+    display: flex; justify-content: center; gap: clamp(0.9rem, 4.5vw, 2.2rem);
     padding: 0.7rem 0 0.4rem;
   }
   #tools .tool {
     background: none; border: none; cursor: pointer; font: inherit;
     color: var(--muted); display: flex; flex-direction: column;
-    align-items: center; gap: 0.25rem; width: 3.6rem;
+    align-items: center; gap: 0.25rem; min-width: 3.4rem; padding: 0 0.2rem;
     transition: color .15s ease;
   }
   #tools .tool:hover { color: var(--sand); }
   #tools .tool:disabled { opacity: 0.32; cursor: default; }
   #tools .tool.on { color: var(--accent); }
   #tools .tool .g { font-size: 1.2rem; line-height: 1; }
-  #tools .tool .l { font-size: 0.66rem; letter-spacing: 0.04em; }
+  #tools .tool .l { font-size: 0.66rem; letter-spacing: 0.04em; white-space: nowrap; }
 
   #keypad {
     display: grid; grid-template-columns: repeat(9, 1fr); gap: 5px;
@@ -170,6 +170,7 @@
   <button class="tool" id="undo"><span class="g">&#8630;</span><span class="l">Undo</span></button>
   <button class="tool" id="erase"><span class="g">&#9003;</span><span class="l">Erase</span></button>
   <button class="tool" id="notesBtn"><span class="g">&#9998;</span><span class="l">Notes</span></button>
+  <button class="tool" id="clearNotes"><span class="g">&#8856;</span><span class="l">Clear notes</span></button>
 </div>
 
 <div id="keypad"></div>
@@ -634,9 +635,9 @@ function render(now) {
   const peers = selection >= 0 && settings.highlights ? new Set(E.PEERS[selection]) : null;
 
   for (let c = 0; c < 81; c++) {
-    let fill = "rgba(236,231,222,0.022)";
-    const box = E.BOX(c);
-    if (((box / 3 | 0) + (box % 3)) % 2 === 1) fill = "rgba(236,231,222,0.042)";
+    // Every box gets the same ground. The 3x3 blocks are already told apart
+    // by their heavier borders, so shading alternate ones only added motion.
+    let fill = "rgba(236,231,222,0.030)";
     if (selection >= 0) {
       if (c === selection) fill = "rgba(200,178,138,0.17)";
       else if (settings.highlights) {
@@ -667,7 +668,7 @@ function render(now) {
   }
   ctx.stroke();
 
-  ctx.strokeStyle = "rgba(200,178,138,0.34)";
+  ctx.strokeStyle = "rgba(200,178,138,0.42)";
   ctx.lineWidth = 1.7;
   ctx.beginPath();
   for (let i = 0; i <= 9; i += 3) {
@@ -702,6 +703,19 @@ function render(now) {
 function record(cell) {
   history.push({ cell, entry: entries[cell], note: notes[cell], mistakes });
   if (history.length > 300) history.shift();
+}
+
+const anyNotes = () => notes.some(n => n !== 0);
+
+// Over-notating is easy and undoing it one cell at a time is tedious, so the
+// whole board clears in one go. It goes on the undo stack like anything else.
+function clearNotes() {
+  if (!running || finished || !anyNotes()) return;
+  history.push({ notesAll: Int16Array.from(notes), mistakes });
+  if (history.length > 300) history.shift();
+  notes.fill(0);
+  selection = -1;
+  sfxClear(); save(); syncUI();
 }
 
 function enter(d) {
@@ -740,10 +754,14 @@ function erase() {
 function undo() {
   if (!history.length) return;
   const s = history.pop();
-  entries[s.cell] = s.entry;
-  notes[s.cell] = s.note;
+  if (s.notesAll) {
+    notes.set(s.notesAll);
+  } else {
+    entries[s.cell] = s.entry;
+    notes[s.cell] = s.note;
+    selection = s.cell;
+  }
   mistakes = s.mistakes;
-  selection = s.cell;
   finished = false;
   sfxUndo(); save(); syncUI();
 }
@@ -785,6 +803,7 @@ function tone(f, dur, type, gain, delay) {
 const sfxPlace = () => tone(660, 0.07, "sine", 0.028);
 const sfxWrong = () => tone(150, 0.13, "triangle", 0.04);
 const sfxUndo  = () => tone(420, 0.08, "sine", 0.026);
+const sfxClear = () => { tone(360, 0.09, "sine", 0.024); tone(240, 0.11, "sine", 0.022, 0.05); };
 const sfxDone  = () => [0, 4, 7, 12].forEach((s, i) => tone(523.25 * Math.pow(2, s / 12), 0.6, "sine", 0.05, i * 0.1));
 
 /* ---------- chrome ---------- */
@@ -794,6 +813,7 @@ const $mist = document.getElementById("mistakes");
 const $clock = document.getElementById("clock");
 const $undo = document.getElementById("undo");
 const $notes = document.getElementById("notesBtn");
+const $clearNotes = document.getElementById("clearNotes");
 const $veil = document.getElementById("veil");
 const $keypad = document.getElementById("keypad");
 
@@ -811,6 +831,7 @@ function syncUI() {
   $clock.textContent = fmtClock();
   $clock.parentElement.style.display = settings.clock ? "" : "none";
   $undo.disabled = !history.length;
+  $clearNotes.disabled = !anyNotes();
   $notes.classList.toggle("on", notesMode);
   [...$keypad.children].forEach((b, i) => {
     const done = placedCount(i + 1) === 9;
@@ -914,6 +935,7 @@ if (window.visualViewport) window.visualViewport.addEventListener("resize", resi
 
   document.getElementById("undo").addEventListener("click", () => { audio(); undo(); });
   document.getElementById("erase").addEventListener("click", () => { audio(); erase(); });
+  $clearNotes.addEventListener("click", () => { audio(); clearNotes(); });
   document.getElementById("notesBtn").addEventListener("click", () => {
     notesMode = !notesMode; audio(); syncUI();
   });
