@@ -128,6 +128,9 @@
   .card p.body { color: var(--muted); font-size: 0.92rem; line-height: 1.6; margin-bottom: 1.2rem; }
   .card p.body b { color: var(--text); font-weight: 500; }
 
+  .kinds { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem; margin-bottom: 0.6rem; }
+  .kinds .btn { padding: 0.5rem 0.3rem; font-size: 0.88rem; }
+  .kinds .btn.on { border-color: var(--accent); color: var(--accent); background: rgba(127,176,105,0.07); }
   .tiers { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem; margin-bottom: 1rem; }
   .tiers .btn { padding: 0.6rem 0.3rem; font-size: 0.88rem; }
   .tiers .btn.on { border-color: var(--accent); color: var(--accent); background: rgba(127,176,105,0.07); }
@@ -182,11 +185,12 @@
     <h1 id="ttl">Sudoku</h1>
     <p class="sub" id="sttl">Nothing to lose.</p>
     <p class="body" id="msg">
-      Every puzzle here can be finished by <b>reasoning alone</b>. None of them
-      ever require a guess.<br><br>
+      Classic, or killer with its cages and sums. Every puzzle here can be
+      finished by <b>reasoning alone</b>. None of them ever require a guess.<br><br>
       No hints, no lives, no currency. A wrong digit is marked so you can find it
       and fix it, and costs you nothing else.
     </p>
+    <div class="kinds" id="kinds"></div>
     <div class="tiers" id="tiers"></div>
     <div class="rowbtns">
       <button class="btn primary" id="play">Play</button>
@@ -196,21 +200,20 @@
   </div>
 </div>
 
-<script>
+<script id="engine">
 "use strict";
 /* ============================================================
-   A classic sudoku engine, small on purpose.
+   A sudoku engine, small on purpose.
 
-   The heavy machinery in the Swift version exists for killer: cages,
-   the rule of 45, proving a cage layout can be solved without ever
-   guessing. Plain sudoku is the easy case. You take a finished grid
-   and delete clues for as long as it still has exactly one answer,
-   which is a directed process that converges, so none of that is
-   needed here.
+   Classic first, then killer on top of it. Plain sudoku is the easy
+   case: take a finished grid and delete clues for as long as it still
+   has exactly one answer. Killer needs the heavier machinery, cages,
+   the rule of 45, and a proof that a cage layout can be solved without
+   ever guessing, which lives in the second half of this file.
 
-   What is kept is the part that decides difficulty: a puzzle is
-   graded by the hardest technique it forces you to reach for, and
-   nothing is published that cannot be finished by reasoning alone.
+   What both share is how difficulty is decided: a puzzle is graded by
+   the hardest technique it forces you to reach for, and nothing is
+   published that cannot be finished by reasoning alone.
    ============================================================ */
 
 const ALL = 0b11_1111_1110;                       // bits 1..9
@@ -236,9 +239,10 @@ const PEERS = [...Array(81)].map((_, i) => {
 
 /* Techniques in the order a person reaches for them. Difficulty is the
    hardest one a puzzle forces, which is how every serious grader works. */
-const TECHNIQUES = ["Naked single", "Hidden single", "Pointing", "Box line",
-                    "Naked pair", "Hidden pair", "Naked triple", "Hidden triple"];
-const T = { NS: 0, HS: 1, POINT: 2, BOXLINE: 3, NP: 4, HP: 5, NT: 6, HT: 7 };
+const TECHNIQUES = ["Naked single", "Hidden single", "Cage layout", "Rule of 45",
+                    "Pointing", "Box line", "Naked pair", "Hidden pair",
+                    "Naked triple", "Hidden triple"];
+const T = { NS: 0, HS: 1, CAGE: 2, R45: 3, POINT: 4, BOXLINE: 5, NP: 6, HP: 7, NT: 8, HT: 9 };
 
 function rngFrom(seed) {
   let s = (seed >>> 0) + 0x9E3779B9;
@@ -290,6 +294,7 @@ function drain(st, pending, log) {
     const d = pending.pop(), cell = pending.pop();
     if (!(st.cand[cell] & bit(d))) continue;
     st.cand[cell] &= ~bit(d);
+    if (st.touched) st.touched[cell] = 1;
     const rem = st.cand[cell];
     if (!rem) return false;
 
@@ -452,7 +457,7 @@ function hiddenSubset(st, pending, k, log) {
 function solveLogically(givens, witness) {
   const log = new Array(TECHNIQUES.length).fill(0);
   const st = freshState(givens, log);
-  if (!st) return { solved: false, log, hardest: -1, unsound: false };
+  if (!st) return { solved: false, log, hardest: -1, unsound: !!witness };
 
   const bad = () => witness && [...Array(81).keys()].some(c => !(st.cand[c] & bit(witness[c])));
   if (bad()) return { solved: false, log, hardest: -1, unsound: true };
@@ -465,7 +470,7 @@ function solveLogically(givens, witness) {
       || nakedSubset(st, pending, 3, log)
       || hiddenSubset(st, pending, 3, log);
     if (!fired) break;                      // out of ideas, and never guessing
-    if (!drain(st, pending, log)) return { solved: false, log, hardest: -1, unsound: false };
+    if (!drain(st, pending, log)) return { solved: false, log, hardest: -1, unsound: !!witness };
     if (bad()) return { solved: false, log, hardest: -1, unsound: true };
   }
 
@@ -546,6 +551,7 @@ function generate(tierIdx, seed) {
     if (!r.solved || r.unsound) continue;
     const clues = Array.from(givens).filter(Boolean).length;
     const puzzle = {
+      kind: "classic", cages: [],
       givens: Array.from(givens), solution: Array.from(solution),
       hardest: r.hardest, tier: tierIdx, clues
     };
@@ -564,10 +570,481 @@ function generate(tierIdx, seed) {
   return best || fallback;
 }
 
+
+/* ============================================================
+   Killer.
+
+   A cage is a few joined cells whose digits differ and add to a printed
+   total. Nothing else is given: the cages carry all the information.
+   The solver above is reused whole; what is added is the reasoning a
+   cage makes possible, and the rule of 45.
+   ============================================================ */
+
+/* ---------- combinations ----------
+   COMBOS[size][sum] lists every set of distinct digits of that size with
+   that total, as masks. Killer solving leans on this constantly. */
+const COMBOS = [...Array(10)].map(() => [...Array(46)].map(() => []));
+const UNION = [...Array(10)].map(() => new Int16Array(46));
+for (let subset = 0; subset < 512; subset++) {
+  let mask = 0, sum = 0, size = 0;
+  for (let d = 1; d <= 9; d++) if (subset & (1 << (d - 1))) { mask |= bit(d); sum += d; size++; }
+  if (size) { COMBOS[size][sum].push(mask); UNION[size][sum] |= mask; }
+}
+const boundsLo = k => k * (k + 1) / 2;           // 1+2+...+k
+const boundsHi = k => k * (19 - k) / 2;          // 9+8+...
+const highest = m => 31 - Math.clz32(m);
+
+/* ---------- regions, for the rule of 45 ----------
+   Every row, column and box holds 1 to 9 once, so any union of whole
+   units totals 45 per unit. Compare that with the cages inside it and
+   the leftover cells have a known sum. Single units, plus pairs and
+   triples of rows in a band, columns in a stack, and boxes in a band or
+   stack; units that do not line up share too few cages to say much. */
+const cellSet = cells => { const w = [0, 0, 0]; for (const c of cells) w[c >>> 5] |= 1 << (c & 31); return w; };
+const subsetOf = (a, b) => !(a[0] & ~b[0]) && !(a[1] & ~b[1]) && !(a[2] & ~b[2]);
+const intersects = (a, b) => !!((a[0] & b[0]) | (a[1] & b[1]) | (a[2] & b[2]));
+const inSet = (w, c) => !!(w[c >>> 5] & (1 << (c & 31)));
+
+const REGIONS = (() => {
+  const out = [], seen = new Set();
+  const add = groups => {
+    const cells = [].concat(...groups).sort((a, b) => a - b);
+    const key = cells.join(",");
+    if (!cells.length || seen.has(key)) return;
+    seen.add(key);
+    out.push({ cells, mask: cellSet(cells), target: 45 * groups.length });
+  };
+  const pick = [[0, 1], [0, 2], [1, 2], [0, 1, 2]];
+  for (const u of UNITS) add([u]);
+  for (let base = 0; base < 9; base += 3) {
+    for (const combo of pick) {
+      add(combo.map(i => UNITS[base + i]));
+      add(combo.map(i => UNITS[9 + base + i]));
+    }
+  }
+  for (let b = 0; b < 3; b++) {
+    for (const combo of pick) {
+      add(combo.map(i => UNITS[18 + b * 3 + i]));
+      add(combo.map(i => UNITS[18 + b + i * 3]));
+    }
+  }
+  return out;
+})();
+
+/* A leftover group with a known total. The group is fixed but what it
+   tells you is not: as its cells fill, the remainder shrinks, and a group
+   of four ends up a group of one that names a digit outright. So these
+   are kept and re-read throughout the solve rather than applied once. */
+function regionData(cells, sum) {
+  const same = f => cells.every(c => f(c) === f(cells[0]));
+  return { cells, sum, distinct: same(ROW) || same(COL) || same(BOX) };
+}
+
+function makeSolver(cages) {
+  const cagesOfCell = [...Array(81)].map(() => []);
+  cages.forEach((cage, ci) => { for (const c of cage.cells) cagesOfCell[c].push(ci); });
+  const masks = cages.map(g => cellSet(g.cells));
+  const regions = [];
+  let impossible = false;
+
+  for (const region of REGIONS) {
+    let containedSum = 0, crossingSum = 0;
+    const covered = [0, 0, 0], outies = [];
+    masks.forEach((m, ci) => {
+      if (subsetOf(m, region.mask)) {
+        containedSum += cages[ci].sum;
+        covered[0] |= m[0]; covered[1] |= m[1]; covered[2] |= m[2];
+      } else if (intersects(m, region.mask)) {
+        crossingSum += cages[ci].sum;
+        for (const c of cages[ci].cells) if (!inSet(region.mask, c)) outies.push(c);
+      }
+    });
+    const innies = region.cells.filter(c => !inSet(covered, c));
+    if (!innies.length && containedSum !== region.target) impossible = true;
+    // Beyond four cells a known total constrains almost nothing.
+    if (innies.length && innies.length <= 4)
+      regions.push(regionData(innies, region.target - containedSum));
+    if (outies.length && outies.length <= 4)
+      regions.push(regionData(outies, containedSum + crossingSum - region.target));
+  }
+  return { cages, cagesOfCell, regions, impossible };
+}
+
+/* ---------- cage narrowing ----------
+   For one combination, which digits may each open cell take? A digit is
+   only usable in a cell if some perfect matching of the whole combination
+   onto the cells uses that pairing. A subset DP forwards and backwards
+   answers that for up to six cells without allocating anything. */
+const _open = new Int32Array(9), _cc = new Int32Array(9), _allow = new Int32Array(9);
+const _digits = new Int32Array(6), _cellBits = new Int32Array(6);
+const _fwd = new Uint8Array(64), _bwd = new Uint8Array(64);
+
+function analyse(combo, k) {
+  let r = combo, j = 0;
+  while (r) { _digits[j++] = lowest(r); r &= r - 1; }
+  for (let i = 0; i < k; i++) {
+    let b = 0;
+    for (let jj = 0; jj < k; jj++) if (_cc[i] & bit(_digits[jj])) b |= 1 << jj;
+    _cellBits[i] = b;
+  }
+  const full = (1 << k) - 1;
+  _fwd.fill(0, 0, full + 1); _bwd.fill(0, 0, full + 1);
+  _fwd[0] = 1;
+  for (let mask = 0; mask <= full; mask++) {
+    if (!_fwd[mask]) continue;
+    const i = count(mask);
+    if (i >= k) continue;
+    let avail = _cellBits[i] & ~mask;
+    while (avail) { const jj = lowest(avail); avail &= avail - 1; _fwd[mask | (1 << jj)] = 1; }
+  }
+  if (!_fwd[full]) return false;
+  _bwd[full] = 1;
+  for (let mask = full - 1; mask >= 0; mask--) {
+    const pI = count(mask);
+    if (pI >= k) continue;
+    let avail = _cellBits[pI] & ~mask;
+    while (avail) {
+      const jj = lowest(avail); avail &= avail - 1;
+      if (_bwd[mask | (1 << jj)]) { _bwd[mask] = 1; break; }
+    }
+  }
+  for (let m = 0; m <= full; m++) {
+    if (!_fwd[m]) continue;
+    const i = count(m);
+    if (i >= k) continue;
+    let avail = _cellBits[i] & ~m;
+    while (avail) {
+      const jj = lowest(avail); avail &= avail - 1;
+      if (_bwd[m | (1 << jj)]) _allow[i] |= bit(_digits[jj]);
+    }
+  }
+  return true;
+}
+
+/* Only cages whose cells changed are revisited, which is what keeps this
+   affordable when it runs after every deduction. */
+function cagePass(st, pending, log) {
+  const sv = st.solver;
+  for (let ci = 0; ci < sv.cages.length; ci++) {
+    if (!st.dirty[ci]) continue;
+    st.dirty[ci] = 0;
+    const cage = sv.cages[ci];
+    let placed = 0, placedSum = 0, k = 0;
+    for (const c of cage.cells) {
+      const v = st.val[c];
+      if (v) { if (placed & bit(v)) return false; placed |= bit(v); placedSum += v; }
+      else _open[k++] = c;
+    }
+    if (k === 0) { if (placedSum !== cage.sum) return false; continue; }
+    const need = cage.sum - placedSum;
+    if (need < boundsLo(k) || need > boundsHi(k)) return false;
+
+    let union = 0;
+    for (let i = 0; i < k; i++) { _cc[i] = st.cand[_open[i]]; _allow[i] = 0; union |= _cc[i]; }
+    let any = false;
+    for (const combo of COMBOS[k][need]) {
+      if (combo & placed) continue;
+      if (combo & ~union) continue;
+      if (k <= 6) { if (analyse(combo, k)) any = true; }
+      else { any = true; for (let i = 0; i < k; i++) _allow[i] |= combo; }   // big cages say little
+    }
+    if (!any) return false;
+    let narrowed = false;
+    for (let i = 0; i < k; i++) {
+      let extra = _cc[i] & ~_allow[i];
+      if (extra) narrowed = true;
+      while (extra) { const d = lowest(extra); extra &= extra - 1; pending.push(_open[i], d); }
+    }
+    if (narrowed && log) log[T.CAGE]++;
+  }
+  return true;
+}
+
+/* Singles, then cages, round and round until nothing moves. */
+function propagate(st, pending, log) {
+  const sv = st.solver;
+  for (;;) {
+    if (!drain(st, pending, log)) return false;
+    if (!sv) return true;
+    let any = false;
+    for (let c = 0; c < 81; c++) {
+      if (!st.touched[c]) continue;
+      st.touched[c] = 0;
+      for (const ci of sv.cagesOfCell[c]) { st.dirty[ci] = 1; any = true; }
+    }
+    if (!any) for (let ci = 0; ci < st.dirty.length; ci++) if (st.dirty[ci]) { any = true; break; }
+    if (!any) return true;
+    if (!cagePass(st, pending, log)) return false;
+    if (!pending.length) return true;
+  }
+}
+
+/* The rule of 45, applied continuously. Groups that share a unit hold
+   distinct digits and get full combination reasoning; the rest only get
+   bounds, which is still worth having. */
+function regionRules(st, pending, log) {
+  let fired = false;
+  for (const region of st.solver.regions) {
+    let need = region.sum;
+    const open = [];
+    for (const c of region.cells) { if (st.val[c]) need -= st.val[c]; else open.push(c); }
+    if (!open.length) continue;
+
+    if (open.length === 1) {
+      const c = open[0];
+      if (need < 1 || need > 9 || !(st.cand[c] & bit(need))) continue;
+      let extra = st.cand[c] & ~bit(need);
+      if (extra) fired = true;
+      while (extra) { const d = lowest(extra); extra &= extra - 1; pending.push(c, d); }
+      continue;
+    }
+    if (region.distinct) {
+      const k = open.length;
+      if (need < boundsLo(k) || need > boundsHi(k)) continue;
+      let union = 0;
+      for (const c of open) union |= st.cand[c];
+      let allowed = 0;
+      for (const combo of COMBOS[k][need]) if (!(combo & ~union)) allowed |= combo;
+      for (const c of open) {
+        let extra = st.cand[c] & ~allowed;
+        if (extra) fired = true;
+        while (extra) { const d = lowest(extra); extra &= extra - 1; pending.push(c, d); }
+      }
+    } else {
+      // Digits may repeat, so only the reachable range says anything: a cell
+      // cannot exceed the total less the smallest the others could be, nor
+      // fall below the total less the largest.
+      let minO = 0, maxO = 0;
+      for (const c of open) { minO += lowest(st.cand[c]); maxO += highest(st.cand[c]); }
+      for (const c of open) {
+        const oMin = minO - lowest(st.cand[c]), oMax = maxO - highest(st.cand[c]);
+        let extra = 0, m = st.cand[c];
+        while (m) { const d = lowest(m); m &= m - 1; if (d + oMin > need || d + oMax < need) extra |= bit(d); }
+        if (extra) fired = true;
+        while (extra) { const d = lowest(extra); extra &= extra - 1; pending.push(c, d); }
+      }
+    }
+  }
+  if (fired && log) log[T.R45]++;
+  return fired;
+}
+
+function killerState(solver, log) {
+  if (solver.impossible) return null;
+  const st = {
+    cand: new Int16Array(81).fill(ALL), val: new Uint8Array(81), filled: 0,
+    isGiven: new Uint8Array(81), solver,
+    touched: new Uint8Array(81), dirty: new Uint8Array(solver.cages.length).fill(1)
+  };
+  // Every cell starts limited to the digits its cage total allows. Queued as
+  // eliminations rather than written straight in, so anything that collapses
+  // to a single digit is assigned and its peers hear about it.
+  const pending = [];
+  for (const cage of solver.cages) {
+    const k = cage.cells.length;
+    if (cage.sum < boundsLo(k) || cage.sum > boundsHi(k)) return null;
+    const extra = ALL & ~UNION[k][cage.sum];
+    for (const c of cage.cells) {
+      let e = extra;
+      while (e) { const d = lowest(e); e &= e - 1; pending.push(c, d); }
+    }
+  }
+  return propagate(st, pending, log) ? st : null;
+}
+
+/* Same contract as solveLogically: forced steps only, so solving is itself
+   a proof of uniqueness. The witness, when given, is the true solution, and
+   no rule may ever eliminate the digit it needs. A generator and a solver
+   that share a bug will agree with each other forever; this is the only
+   check that can tell them apart. */
+function solveKiller(cages, witness) {
+  const log = new Array(TECHNIQUES.length).fill(0);
+  const fail = unsound => ({ solved: false, log, hardest: -1, unsound });
+  const st = killerState(makeSolver(cages), log);
+  if (!st) return fail(!!witness);
+  const bad = () => {
+    if (!witness) return false;
+    for (let c = 0; c < 81; c++) if (!(st.cand[c] & bit(witness[c]))) return true;
+    return false;
+  };
+  if (bad()) return fail(true);
+
+  while (st.filled < 81) {
+    const pending = [];
+    const fired = regionRules(st, pending, log)
+      || lineBox(st, pending, log)
+      || nakedSubset(st, pending, 2, log) || hiddenSubset(st, pending, 2, log)
+      || nakedSubset(st, pending, 3, log) || hiddenSubset(st, pending, 3, log);
+    if (!fired) break;                      // out of ideas, and never guessing
+    if (!propagate(st, pending, log)) return fail(!!witness);
+    if (bad()) return fail(true);
+  }
+  let hardest = -1;
+  for (let i = 0; i < log.length; i++) if (log[i]) hardest = i;
+  return { solved: st.filled === 81, log, hardest, unsound: false, grid: Array.from(st.val) };
+}
+
+/* ---------- carving cages ----------
+   Cages are kept or rejected on how many digit combinations their total
+   admits, not on how many cells they have. A five cell cage totalling 15
+   has one combination and is a gift; one totalling 25 has twelve and says
+   almost nothing. The size bag is drawn from directly, so its makeup is
+   the size distribution: published grids run about 30 cages over 81 cells,
+   mostly twos and threes with a tail of fours and fives. */
+const SIZE_BAG = [2, 2, 2, 3, 3, 3, 4], MAX_COMBOS = 6, MAX_CAGE = 5;
+const NEIGH = [...Array(81)].map((_, c) => {
+  const r = ROW(c), k = COL(c), o = [];
+  if (r > 0) o.push(c - 9); if (r < 8) o.push(c + 9);
+  if (k > 0) o.push(c - 1); if (k < 8) o.push(c + 1);
+  return o;
+});
+const adjacent = (a, b) => Math.abs(ROW(a) - ROW(b)) + Math.abs(COL(a) - COL(b)) === 1;
+
+function cagePartition(solution, rnd) {
+  const owner = new Int8Array(81).fill(-1);
+  const cages = [];
+  for (const seed of shuffle([...Array(81).keys()], rnd)) {
+    if (owner[seed] !== -1) continue;
+    let bestCells = [seed], bestCombos = Infinity;
+    // Several independent growths from the same seed, keeping the largest
+    // shape whose total stays informative.
+    for (let t = 0; t < 10; t++) {
+      const want = SIZE_BAG[(rnd() * SIZE_BAG.length) | 0];
+      const cells = [seed];
+      let used = bit(solution[seed]);
+      while (cells.length < want) {
+        const options = [];
+        for (const c of cells) for (const n of NEIGH[c]) {
+          if (owner[n] !== -1 || cells.includes(n) || (used & bit(solution[n]))) continue;
+          options.push(n);
+        }
+        if (!options.length) break;
+        const pick = options[(rnd() * options.length) | 0];
+        cells.push(pick); used |= bit(solution[pick]);
+      }
+      let sum = 0;
+      for (const c of cells) sum += solution[c];
+      const nc = COMBOS[cells.length][sum].length;
+      const haveGood = bestCombos <= MAX_COMBOS;
+      if (nc <= MAX_COMBOS) {
+        if (!haveGood || cells.length > bestCells.length) { bestCells = cells; bestCombos = nc; }
+      } else if (!haveGood && nc < bestCombos) { bestCells = cells; bestCombos = nc; }
+    }
+    for (const c of bestCells) owner[c] = cages.length;
+    cages.push(bestCells);
+  }
+
+  // A lone cell simply hands its digit over, so fold it into a neighbour
+  // wherever the digits allow.
+  let again = true;
+  while (again) {
+    again = false;
+    for (let ci = 0; ci < cages.length; ci++) {
+      if (cages[ci].length !== 1) continue;
+      const c = cages[ci][0], d = bit(solution[c]);
+      for (let cj = 0; cj < cages.length; cj++) {
+        const other = cages[cj];
+        if (cj === ci || !other.length || other.length >= MAX_CAGE) continue;
+        if (!other.some(o => adjacent(o, c))) continue;
+        let m = 0;
+        for (const o of other) m |= bit(solution[o]);
+        if (m & d) continue;
+        other.push(c); cages[ci] = []; again = true; break;
+      }
+    }
+    for (let i = cages.length - 1; i >= 0; i--) if (!cages[i].length) cages.splice(i, 1);
+  }
+  // A lone cell nobody could take is not a cage worth printing.
+  if (cages.some(cells => cells.length === 1)) return null;
+  return cages.map(cells => {
+    cells.sort((a, b) => a - b);
+    let sum = 0;
+    for (const c of cells) sum += solution[c];
+    return { cells, sum };
+  });
+}
+
+/* A tier is a band on the technique ladder: the hardest step the puzzle
+   may demand, and the easiest it must, so the tiers stay distinct. One
+   carving profile serves all four, because difficulty is read off the
+   finished puzzle rather than dialled in beforehand. */
+const KILLER_TIERS = [
+  { name: "Gentle",   floor: T.NS,    ceiling: T.R45,     blurb: "cages and the 45 rule" },
+  { name: "Moderate", floor: T.POINT, ceiling: T.BOXLINE, blurb: "adds box and line" },
+  { name: "Tricky",   floor: T.NP,    ceiling: T.HP,      blurb: "adds pairs" },
+  { name: "Severe",   floor: T.NT,    ceiling: T.HT,      blurb: "adds triples" }
+];
+
+function generateKiller(tierIdx, seed, maxAttempts) {
+  const rnd = rngFrom(seed);
+  const tier = KILLER_TIERS[tierIdx];
+  let fallback = null, fallbackGap = Infinity;
+  let solution = solvedGrid(rnd);
+  maxAttempts = maxAttempts || 6000;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (attempt % 20 === 19) solution = solvedGrid(rnd);
+    const cages = cagePartition(solution, rnd);
+    if (!cages) continue;
+    const r = solveKiller(cages, solution);
+    if (!r.solved || r.unsound || r.hardest < 0) continue;
+    const puzzle = {
+      kind: "killer", cages, givens: new Array(81).fill(0),
+      solution: Array.from(solution), hardest: r.hardest, tier: tierIdx, clues: 0
+    };
+    if (r.hardest <= tier.ceiling && r.hardest >= tier.floor) return puzzle;
+    // A puzzle in a neighbouring tier is still a good puzzle, so the closest
+    // one seen is kept rather than thrown away.
+    const gap = r.hardest > tier.ceiling ? r.hardest - tier.ceiling : tier.floor - r.hardest;
+    if (gap < fallbackGap) { fallbackGap = gap; fallback = puzzle; }
+  }
+  return fallback;
+}
+
+/* Everything a well formed killer must satisfy. Cheap, and worth running
+   on every generated puzzle in the test harness. */
+function validateKiller(p) {
+  const problems = [];
+  const covered = new Uint8Array(81);
+  let total = 0;
+  for (const cage of p.cages) {
+    total += cage.sum;
+    if (cage.cells.length < 2 || cage.cells.length > MAX_CAGE) problems.push("cage of " + cage.cells.length);
+    let seen = 0, sum = 0;
+    for (const c of cage.cells) {
+      if (covered[c]) problems.push("cell " + c + " in two cages");
+      covered[c] = 1;
+      const d = p.solution[c];
+      if (seen & bit(d)) problems.push("cage repeats " + d);
+      seen |= bit(d); sum += d;
+    }
+    if (sum !== cage.sum) problems.push("cage sum wrong");
+    const set = new Set(cage.cells), reached = new Set([cage.cells[0]]), stack = [cage.cells[0]];
+    while (stack.length) for (const n of NEIGH[stack.pop()]) if (set.has(n) && !reached.has(n)) { reached.add(n); stack.push(n); }
+    if (reached.size !== cage.cells.length) problems.push("cage not contiguous");
+  }
+  if (covered.some(v => !v)) problems.push("uncovered cell");
+  if (total !== 405) problems.push("sums total " + total);
+  return problems;
+}
+
 if (typeof window !== "undefined") {
   window.SudokuEngine = {
-    generate, solveLogically, countSolutions, solvedGrid, rngFrom,
-    TIERS, TECHNIQUES, UNITS, PEERS, ROW, COL, BOX, bit, count, lowest
+    generate, generateKiller, solveLogically, solveKiller, countSolutions,
+    solvedGrid, cagePartition, validateKiller, rngFrom,
+    TIERS, KILLER_TIERS, TECHNIQUES, T, UNITS, PEERS, ROW, COL, BOX, bit, count, lowest
+  };
+} else if (typeof module !== "undefined" && module.exports) {
+  module.exports = {
+    generate, generateKiller, solveLogically, solveKiller, countSolutions,
+    solvedGrid, cagePartition, validateKiller, rngFrom, TIERS, KILLER_TIERS, TECHNIQUES, T
+  };
+} else if (typeof self !== "undefined") {
+  // Running as a worker: build puzzles off the main thread.
+  self.onmessage = e => {
+    const { id, kind, tier, seed } = e.data;
+    const puzzle = kind === "killer" ? generateKiller(tier, seed) : generate(tier, seed);
+    self.postMessage({ id, puzzle });
   };
 }
 
@@ -595,6 +1072,12 @@ let mistakes = 0;
 let elapsed = 0, lastTick = 0, finished = false;
 let history = [];
 let tier = 0, seedCounter = 1;
+let kind = "classic", kindSel = "classic";   // playing, and picked in the menu
+let cageOf = new Int8Array(81).fill(-1);    // cell -> cage index, killer only
+let cageMates = [], labelCell = new Uint8Array(81);
+const tiersFor = k => (k === "killer" ? E.KILLER_TIERS : E.TIERS);
+const tierName = () => tiersFor(kind)[tier].name;
+const gameName = () => (kind === "killer" ? "Killer " : "") + tierName();
 let running = false;
 let flash = null;                  // {cell, t} for a wrong entry
 const DEFAULTS = { clock: true, mistakes: true, check: true, highlights: true };
@@ -679,25 +1162,73 @@ function render(now) {
   }
   ctx.stroke();
 
+  if (kind === "killer") drawCages();
+
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   for (let c = 0; c < 81; c++) {
-    const x = cellX(c) + S / 2, y = cellY(c) + S / 2 + S * 0.03;
+    // In killer the digit sits a touch lower and smaller to clear the total.
+    const x = cellX(c) + S / 2, y = cellY(c) + S / 2 + S * (kind === "killer" ? 0.07 : 0.03);
     if (entries[c]) {
       const wrong = settings.check && isWrong(c);
       ctx.fillStyle = wrong ? WRONG : (isGiven(c) ? "#ddd6c8" : "#c8b28a");
-      ctx.font = (isGiven(c) ? "500 " : "400 ") + Math.round(S * 0.60) +
+      ctx.font = (isGiven(c) ? "500 " : "400 ") + Math.round(S * (kind === "killer" ? 0.55 : 0.60)) +
                  "px -apple-system, Helvetica, Arial, sans-serif";
       ctx.fillText(entries[c], x, y);
     } else if (notes[c]) {
       ctx.fillStyle = "rgba(148,139,126,0.85)";
-      ctx.font = "400 " + Math.round(S * 0.24) + "px -apple-system, Helvetica, Arial, sans-serif";
+      ctx.font = "400 " + Math.round(S * (kind === "killer" && labelCell[c] ? 0.21 : 0.24)) +
+                 "px -apple-system, Helvetica, Arial, sans-serif";
       for (let d = 1; d <= 9; d++) {
         if (!(notes[c] & E.bit(d))) continue;
         const col = (d - 1) % 3, row = ((d - 1) / 3) | 0;
-        ctx.fillText(d, cellX(c) + S * (0.22 + 0.28 * col), cellY(c) + S * (0.24 + 0.27 * row));
+        const lab = kind === "killer" && labelCell[c];
+        ctx.fillText(d, cellX(c) + S * (0.22 + 0.28 * col),
+                        cellY(c) + S * (lab ? 0.42 + 0.22 * row : 0.24 + 0.27 * row));
       }
     }
+  }
+}
+
+/* Cage outlines run inset from the cell edges, dashed, and the total sits
+   in the top left of the cage's first cell. Each boundary side is drawn per
+   cell; where the neighbouring side is interior the line runs on to the
+   cell edge to meet the next cell's, and a small elbow closes each concave
+   corner where the diagonal belongs to another cage. The totals are drawn
+   larger than usual on purpose. */
+function drawCages() {
+  const inset = Math.max(2.5, S * 0.085);
+  let g;
+  const same = (r, k) => r >= 0 && r < 9 && k >= 0 && k < 9 && cageOf[r * 9 + k] === g;
+  ctx.save();
+  ctx.setLineDash([Math.max(2, S * 0.09), Math.max(2, S * 0.07)]);
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = "rgba(200,178,138,0.58)";
+  ctx.beginPath();
+  for (let c = 0; c < 81; c++) {
+    g = cageOf[c];
+    const r = E.ROW(c), k = E.COL(c);
+    const x0 = cellX(c), y0 = cellY(c), x1 = x0 + S, y1 = y0 + S;
+    const up = same(r - 1, k), down = same(r + 1, k), left = same(r, k - 1), right = same(r, k + 1);
+    if (!up)    { ctx.moveTo(left ? x0 : x0 + inset, y0 + inset); ctx.lineTo(right ? x1 : x1 - inset, y0 + inset); }
+    if (!down)  { ctx.moveTo(left ? x0 : x0 + inset, y1 - inset); ctx.lineTo(right ? x1 : x1 - inset, y1 - inset); }
+    if (!left)  { ctx.moveTo(x0 + inset, up ? y0 : y0 + inset); ctx.lineTo(x0 + inset, down ? y1 : y1 - inset); }
+    if (!right) { ctx.moveTo(x1 - inset, up ? y0 : y0 + inset); ctx.lineTo(x1 - inset, down ? y1 : y1 - inset); }
+    if (up && left && !same(r - 1, k - 1))     { ctx.moveTo(x0, y0 + inset); ctx.lineTo(x0 + inset, y0 + inset); ctx.lineTo(x0 + inset, y0); }
+    if (up && right && !same(r - 1, k + 1))    { ctx.moveTo(x1, y0 + inset); ctx.lineTo(x1 - inset, y0 + inset); ctx.lineTo(x1 - inset, y0); }
+    if (down && left && !same(r + 1, k - 1))   { ctx.moveTo(x0, y1 - inset); ctx.lineTo(x0 + inset, y1 - inset); ctx.lineTo(x0 + inset, y1); }
+    if (down && right && !same(r + 1, k + 1))  { ctx.moveTo(x1, y1 - inset); ctx.lineTo(x1 - inset, y1 - inset); ctx.lineTo(x1 - inset, y1); }
+  }
+  ctx.stroke();
+  ctx.restore();
+
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  ctx.fillStyle = "rgba(221,214,200,0.92)";
+  ctx.font = "500 " + Math.round(S * 0.28) + "px -apple-system, Helvetica, Arial, sans-serif";
+  for (const cage of puzzle.cages) {
+    const c = cage.cells[0];
+    ctx.fillText(cage.sum, cellX(c) + S * 0.09, cellY(c) + S * 0.06);
   }
 }
 
@@ -738,6 +1269,7 @@ function enter(d) {
     } else {
       // Placing a digit clears the obvious pencil marks it rules out.
       for (const p of E.PEERS[selection]) notes[p] &= ~E.bit(d);
+      for (const p of cageMates[selection] || []) notes[p] &= ~E.bit(d);
       sfxPlace();
     }
   }
@@ -774,14 +1306,81 @@ function placedCount(d) {
   return n;
 }
 
-function newPuzzle(t) {
-  tier = t;
-  puzzle = E.generate(tier, (Date.now() ^ (seedCounter++ * 2654435761)) >>> 0);
+function indexCages() {
+  cageOf.fill(-1); labelCell.fill(0); cageMates = [];
+  if (!puzzle || puzzle.kind !== "killer") return;
+  puzzle.cages.forEach((cage, ci) => {
+    labelCell[cage.cells[0]] = 1;
+    for (const c of cage.cells) {
+      cageOf[c] = ci;
+      cageMates[c] = cage.cells.filter(o => o !== c);
+    }
+  });
+}
+
+/* Puzzles are built in a worker so a Severe killer, which can take half a
+   second, never freezes the board. One spare of the current kind and tier
+   is kept ready so the next one deals at once. The worker is the engine
+   script itself, handed over as a blob, which keeps this a single file
+   that still works offline. If workers are unavailable it all runs here. */
+const supply = (() => {
+  let worker = null, nextId = 1;
+  const waiting = new Map(), spare = new Map(), inflight = new Set();
+  const seed = () => (Date.now() ^ (seedCounter++ * 2654435761)) >>> 0;
+  const local = (k, t, sd) => (k === "killer" ? E.generateKiller(t, sd) : E.generate(t, sd));
+  try {
+    const src = document.getElementById("engine").textContent;
+    worker = new Worker(URL.createObjectURL(new Blob([src], { type: "text/javascript" })));
+    worker.onmessage = e => {
+      const w = waiting.get(e.data.id);
+      waiting.delete(e.data.id);
+      if (w) w.res(e.data.puzzle);
+    };
+    worker.onerror = () => {
+      // Finish anything outstanding here, and stop asking the worker.
+      worker = null;
+      for (const w of waiting.values()) w.res(local(w.k, w.t, w.sd));
+      waiting.clear();
+    };
+  } catch (e) { worker = null; }
+
+  function build(k, t) {
+    const sd = seed();
+    if (!worker) return Promise.resolve(local(k, t, sd));
+    return new Promise(res => {
+      const id = nextId++;
+      waiting.set(id, { res, k, t, sd });
+      worker.postMessage({ id, kind: k, tier: t, seed: sd });
+    });
+  }
+  const key = (k, t) => k + ":" + t;
+  function topUp(k, t) {
+    const id = key(k, t);
+    if (spare.has(id) || inflight.has(id)) return;
+    inflight.add(id);
+    build(k, t).then(pz => { inflight.delete(id); if (pz) spare.set(id, pz); });
+  }
+  async function take(k, t) {
+    const id = key(k, t);
+    let pz = spare.get(id);
+    if (pz) spare.delete(id); else pz = await build(k, t);
+    topUp(k, t);
+    return pz;
+  }
+  return { take, topUp, usingWorker: () => !!worker };
+})();
+
+async function newPuzzle(k, t) {
+  const pz = await supply.take(k, t);
+  if (!pz) return false;
+  kind = k; tier = t; puzzle = pz;
+  indexCages();
   entries = Uint8Array.from(puzzle.givens);
   notes = new Int16Array(81);
   selection = -1; mistakes = 0; elapsed = 0; finished = false;
   history = []; flash = null; notesMode = false;
   resize(); save(); syncUI();
+  return true;
 }
 
 /* ---------- sound ---------- */
@@ -848,7 +1447,7 @@ function fmtClock() {
 
 function syncUI() {
   if (!puzzle) return;
-  $tier.textContent = E.TIERS[tier].name.toUpperCase();
+  $tier.textContent = gameName().toUpperCase();
   $clues.textContent = 81 - entries.reduce((n, v) => n + (v ? 1 : 0), 0);
   $mist.textContent = mistakes;
   $mist.parentElement.style.display = settings.mistakes ? "" : "none";
@@ -868,7 +1467,7 @@ function save() {
   try {
     localStorage.setItem("sudoku.save", JSON.stringify({
       puzzle, entries: Array.from(entries), notes: Array.from(notes),
-      mistakes, elapsed, tier, settings, soundPref: soundOn
+      mistakes, elapsed, tier, kind, settings, soundPref: soundOn
     }));
   } catch (e) {}
 }
@@ -877,6 +1476,9 @@ function restore() {
   try { s = JSON.parse(localStorage.getItem("sudoku.save") || "null"); } catch (e) { return false; }
   if (!s || !s.puzzle || !Array.isArray(s.entries) || s.entries.length !== 81) return false;
   puzzle = s.puzzle;
+  kind = puzzle.kind === "killer" ? "killer" : "classic";
+  if (!puzzle.cages) puzzle.cages = [];
+  indexCages();
   entries = Uint8Array.from(s.entries);
   notes = Int16Array.from(s.notes || new Array(81).fill(0));
   mistakes = s.mistakes | 0;
@@ -945,7 +1547,7 @@ if (window.visualViewport) window.visualViewport.addEventListener("resize", resi
 </script>
 <script>
 /* ---------- glue: the menu, the picker, and starting up ---------- */
-(function () {
+(async function () {
   const E = window.SudokuEngine;
   const $veil = document.getElementById("veil");
   const $tiers = document.getElementById("tiers");
@@ -983,20 +1585,46 @@ if (window.visualViewport) window.visualViewport.addEventListener("resize", resi
     if (soundOn) { audio(); sfxPlace(); }
   });
 
+  const $kinds = document.getElementById("kinds");
+  function buildKinds() {
+    $kinds.innerHTML = "";
+    [["Classic", "classic"], ["Killer", "killer"]].forEach(([label, k]) => {
+      const b = document.createElement("button");
+      b.className = "btn" + (k === kindSel ? " on" : "");
+      b.textContent = label;
+      b.addEventListener("click", () => { kindSel = k; buildKinds(); buildTiers(); });
+      $kinds.appendChild(b);
+    });
+  }
+
   function buildTiers() {
     $tiers.innerHTML = "";
-    E.TIERS.forEach((T, i) => {
+    tiersFor(kindSel).forEach((T, i) => {
       const b = document.createElement("button");
-      b.className = "btn" + (i === tier ? " on" : "");
-      b.innerHTML = T.name + "<small>" + T.clues + " clues</small>";
-      b.addEventListener("click", () => {
-        newPuzzle(i);
-        buildTiers();
-        $veil.classList.remove("on");
-        audio(); running = true;
-      });
+      b.className = "btn" + (kindSel === kind && i === tier ? " on" : "");
+      b.innerHTML = T.name + "<small>" + (kindSel === "killer" ? T.blurb : T.clues + " clues") + "</small>";
+      b.addEventListener("click", () => deal(kindSel, i));
       $tiers.appendChild(b);
     });
+  }
+
+  // The veil stays up with a note while a puzzle is being built; the spare
+  // makes that instant nearly every time, so the note is rarely seen.
+  let dealing = false;
+  async function deal(k, t) {
+    if (dealing) return;
+    dealing = true;
+    audio();
+    const $sttl = document.getElementById("sttl"), was = $sttl.textContent;
+    const name = tiersFor(k)[t].name;
+    $sttl.textContent = "Setting up a " + name + (k === "killer" ? " killer..." : " puzzle...");
+    const ok = await newPuzzle(k, t);
+    dealing = false;
+    if (!ok) { $sttl.textContent = "That one would not come together. Try again."; return; }
+    $sttl.textContent = was;
+    buildKinds(); buildTiers();
+    $veil.classList.remove("on");
+    running = true;
   }
 
   function buildOpts() {
@@ -1026,34 +1654,32 @@ if (window.visualViewport) window.visualViewport.addEventListener("resize", resi
     document.getElementById("sttl").textContent =
       returning ? "Your puzzle is where you left it." : "Take your time.";
     document.getElementById("msg").innerHTML =
-      E.TIERS[tier].name + ", <b>" + left + "</b> left.<br><br>" +
+      gameName() + ", <b>" + left + "</b> left.<br><br>" +
       "Resume below, or pick a difficulty to start a new one.";
     document.getElementById("play").textContent = "Resume";
-    buildTiers(); buildOpts();
+    buildKinds(); buildTiers(); buildOpts();
     $veil.classList.add("on");
   }
 
-  document.getElementById("menu").addEventListener("click", () => showResume(false));
+  document.getElementById("menu").addEventListener("click", () => { kindSel = kind; showResume(false); });
 
   document.getElementById("play").addEventListener("click", () => {
+    if (dealing || !puzzle) return;
+    if (finished) { deal(kind, tier); return; }       // "Another"
     $veil.classList.remove("on"); audio(); running = true;
   });
 
   window.showFinished = function () {
     running = false;
     document.getElementById("ttl").textContent = "Solved";
-    document.getElementById("sttl").textContent = E.TIERS[tier].name + " · " + fmtClock();
+    document.getElementById("sttl").textContent = gameName() + " · " + fmtClock();
     document.getElementById("msg").innerHTML = mistakes
       ? "<b>" + mistakes + "</b> correction" + (mistakes === 1 ? "" : "s") + " along the way."
       : "Straight through, no corrections.";
     document.getElementById("play").textContent = "Another";
-    buildTiers(); buildOpts();
+    kindSel = kind;
+    buildKinds(); buildTiers(); buildOpts();
     $veil.classList.add("on");
-    document.getElementById("play").onclick = () => {
-      newPuzzle(tier);
-      $veil.classList.remove("on"); audio(); running = true;
-      document.getElementById("play").onclick = null;
-    };
   };
 
   // Only greet a puzzle that was actually played. A board dealt and left
@@ -1061,11 +1687,12 @@ if (window.visualViewport) window.visualViewport.addEventListener("resize", resi
   const touched = () => entries.some((v, i) => v !== puzzle.givens[i]) ||
                         notes.some(n => n !== 0);
   let resuming = false;
-  if (!restore()) newPuzzle(0);
-  else if (finished) newPuzzle(tier);
-  else resuming = touched();
+  if (!restore()) await newPuzzle("classic", 0);
+  else if (finished) await newPuzzle(kind, tier);
+  else { resuming = touched(); supply.topUp(kind, tier); }
+  kindSel = kind;
   paintSound();
-  buildTiers(); buildOpts();
+  buildKinds(); buildTiers(); buildOpts();
   resize(); syncUI();
   if (resuming) showResume(true);
   requestAnimationFrame(t => { lastTick = t; frame(t); });

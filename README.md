@@ -9,7 +9,8 @@ A small room of quiet browser games. No ads, no accounts, no timers, nothing to 
 | Game | | |
 |---|---|---|
 | [Bubbles](https://markfriedlander.github.io/arcade/bubbles/) | A bubble shooter with no fail state | playable |
-| Killer Sudoku | Cages and sums, no given digits | in the works |
+| [Arrows](https://markfriedlander.github.io/arcade/arrows/) | Free the arrows, no wrong moves | playable |
+| [Sudoku](https://markfriedlander.github.io/arcade/sudoku/) | Classic and killer, every puzzle solvable by reasoning alone | playable |
 
 ## How it is built
 
